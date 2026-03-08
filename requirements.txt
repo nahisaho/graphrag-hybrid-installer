@@ -1,0 +1,7 @@
+graphrag>=3.0.0
+ginza
+ja-ginza
+scispacy
+spacy>=3.7
+tiktoken
+mcp[cli]
