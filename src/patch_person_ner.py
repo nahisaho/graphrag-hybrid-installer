@@ -16,13 +16,21 @@ Solution:
   2. Person entities bypass Top-K filtering as "priority entities"
   3. This ensures researcher names are always included in the graph
 
+v0.3.0 Improvements:
+  - Expanded academic keyword filter (40+ journal/field terms)
+  - Section header filter (Roman numeral + INTRODUCTION etc.)
+  - Concatenated entity filter (ET AL, >3 words, trailing punctuation)
+  - Min person frequency threshold (default 3) to skip reference-only names
+  - Better logging with filtered/kept counts
+
 Note:
   This patch REPLACES the entire build_noun_graph.py with an integrated version
   that includes Top-K (v0.1.0), co-occurrence filter (v0.1.0), and PERSON NER
-  (v0.2.0). It subsumes patch_noun_graph.py — run this one alone for v0.2.0.
+  (v0.2.0+). It subsumes patch_noun_graph.py.
 
 Usage:
-  python3 patch_person_ner.py [--max-k 17] [--min-cooccurrence 2] [--dry-run]
+  python3 patch_person_ner.py [--max-k 17] [--min-cooccurrence 2]
+                              [--min-person-freq 3] [--dry-run]
 """
 
 import argparse
@@ -36,6 +44,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_K = 17
 DEFAULT_MIN_COOCCURRENCE = 2
+DEFAULT_MIN_PERSON_FREQ = 3
 
 
 def find_target_file() -> str:
@@ -62,20 +71,22 @@ def is_already_patched(filepath: str) -> bool:
     return "_extract_person_entities" in content
 
 
-def generate_complete_file(max_k: int, min_cooccurrence: int) -> str:
+def generate_complete_file(max_k: int, min_cooccurrence: int,
+                          min_person_freq: int) -> str:
     """Generate the complete patched build_noun_graph.py."""
     # Use raw string concatenation to avoid f-string brace issues
     return (
         '# Copyright (c) 2024 Microsoft Corporation.\n'
         '# Licensed under the MIT License\n'
-        f'# Patched by graphrag-hybrid-installer v0.2.0\n'
+        f'# Patched by graphrag-hybrid-installer v0.3.0\n'
         f'# - Top-K entity limit (K={max_k})\n'
         f'# - Min co-occurrence filter (>={min_cooccurrence})\n'
-        '# - PERSON NER enhancement (en_core_web_sm)\n'
+        f'# - PERSON NER enhancement (en_core_web_sm, min_freq={min_person_freq})\n'
         '\n'
         '"""Graph extraction using NLP."""\n'
         '\n'
         'import logging\n'
+        'import re\n'
         'from collections import defaultdict\n'
         'from itertools import combinations\n'
         '\n'
@@ -93,6 +104,28 @@ def generate_complete_file(max_k: int, min_cooccurrence: int) -> str:
         '\n'
         '# PERSON NER model (loaded lazily)\n'
         '_person_nlp = None\n'
+        '\n'
+        '# Academic/journal keywords for false positive filtering (v0.3.0)\n'
+        '_ACADEMIC_KEYWORDS = frozenset({\n'
+        '    "PHYS", "MATER", "CHEM", "CRYST", "BIOL", "APPL", "SURF",\n'
+        '    "ALLOY", "ALLOYS", "METALL", "ACTA", "NUCL", "SOC", "LETT",\n'
+        '    "ENG", "SCI", "JAPAN", "INST", "TECH", "REV", "PROC", "INT",\n'
+        '    "NON-CRYST", "ELECTROCHEM", "TRANS", "IEEE", "VOL", "JPN",\n'
+        '    "SUPPL", "MECH", "THERM", "VAC", "MAGN", "MED", "DENT",\n'
+        '    "SOLID", "THIN", "J", "PHILOS", "OXID", "COHESION",\n'
+        '    "INTRODUCTION", "EXPERIMENTAL", "RESULTS", "DISCUSSION",\n'
+        '    "CONCLUSION", "CONCLUSIONS", "SUMMARY", "REFERENCES",\n'
+        '    "BACKGROUND", "METHOD", "METHODS", "PROCEDURE", "SAMPLE",\n'
+        '    "FABRICATION", "ACKNOWLEDGMENT", "ACKNOWLEDGMENTS",\n'
+        '})\n'
+        '\n'
+        '# Section header pattern: Roman numeral followed by known section name\n'
+        '_SECTION_HEADER_RE = re.compile(\n'
+        '    r"^[IVX]+\\.\\s+(?:INTRODUCTION|EXPERIMENTAL|RESULTS?|DISCUSSION"\n'
+        '    r"|CONCLUSIONS?|SUMMARY|REFERENCES|BACKGROUND|METHODS?|PROCEDURE"\n'
+        '    r"|ACKNOWLEDGMENTS?|FABRICATION|ABSTRACT)",\n'
+        '    re.IGNORECASE,\n'
+        ')\n'
         '\n'
         '\n'
         'def _get_person_nlp():\n'
@@ -112,6 +145,46 @@ def generate_complete_file(max_k: int, min_cooccurrence: int) -> str:
         '    return _person_nlp if _person_nlp is not False else None\n'
         '\n'
         '\n'
+        'def _is_valid_person(name: str) -> bool:\n'
+        '    """Check if a detected PERSON entity is a valid person name (v0.3.0).\n'
+        '\n'
+        '    Filters out:\n'
+        '    - Too short (< 3 chars)\n'
+        '    - Pure digits\n'
+        '    - No space (need first + last name)\n'
+        '    - Contains academic/journal keywords (J. APPL, J. MATER, etc.)\n'
+        '    - Section headers (I. INTRODUCTION, II. EXPERIMENTAL, etc.)\n'
+        '    - Concatenated entities (ET AL, > 3 words)\n'
+        '    - Trailing punctuation (references like "E. L. MURR: *")\n'
+        '    """\n'
+        '    if len(name) < 3 or name.isdigit() or " " not in name:\n'
+        '        return False\n'
+        '\n'
+        '    upper = name.upper()\n'
+        '\n'
+        '    # Section header pattern\n'
+        '    if _SECTION_HEADER_RE.match(upper):\n'
+        '        return False\n'
+        '\n'
+        '    # Concatenated entities: "ET AL", too many words, trailing punct\n'
+        '    if "ET AL" in upper:\n'
+        '        return False\n'
+        '    if upper.rstrip().endswith((":", "*", ".", ",")):\n'
+        '        return False\n'
+        '\n'
+        '    words = upper.split()\n'
+        '    if len(words) > 3:\n'
+        '        return False\n'
+        '\n'
+        '    # Check each word (excluding initials like "A.", "M.") against keywords\n'
+        '    for w in words:\n'
+        '        clean = w.rstrip(".:,;*")\n'
+        '        if len(clean) > 1 and clean in _ACADEMIC_KEYWORDS:\n'
+        '            return False\n'
+        '\n'
+        '    return True\n'
+        '\n'
+        '\n'
         'async def build_noun_graph(\n'
         '    text_unit_table: Table,\n'
         '    text_analyzer: BaseNounPhraseExtractor,\n'
@@ -125,7 +198,7 @@ def generate_complete_file(max_k: int, min_cooccurrence: int) -> str:
         '        cache=cache,\n'
         '    )\n'
         '\n'
-        '    # PERSON NER enhancement (v0.2.0)\n'
+        '    # PERSON NER enhancement (v0.2.0+, improved filter v0.3.0)\n'
         '    person_title_to_ids, person_entities = await _extract_person_entities(\n'
         '        text_unit_table, cache,\n'
         '    )\n'
@@ -202,10 +275,14 @@ def generate_complete_file(max_k: int, min_cooccurrence: int) -> str:
         'async def _extract_person_entities(\n'
         '    text_unit_table: Table,\n'
         '    cache: Cache,\n'
+        f'    min_person_freq: int = {min_person_freq},\n'
         ') -> tuple[dict[str, list[str]], set[str]]:\n'
-        '    """Extract PERSON entities using en_core_web_sm NER.\n'
+        '    """Extract PERSON entities using en_core_web_sm NER (v0.3.0).\n'
         '\n'
         '    Runs a supplementary NER pass specifically for person name extraction.\n'
+        '    Applies strict filtering to remove journal abbreviations, section headers,\n'
+        '    and concatenated entities. Only keeps persons with frequency >= min_person_freq.\n'
+        '\n'
         '    Returns (title_to_ids, person_entity_set) where person_entity_set\n'
         '    contains uppercase person names for priority handling in edge extraction.\n'
         '    """\n'
@@ -215,15 +292,16 @@ def generate_complete_file(max_k: int, min_cooccurrence: int) -> str:
         '\n'
         '    person_cache = cache.child("extract_person_entities")\n'
         '    title_to_ids: dict[str, list[str]] = defaultdict(list)\n'
-        '    person_names: set[str] = set()\n'
         '    total = await text_unit_table.length()\n'
         '    completed = 0\n'
+        '    filtered_count = 0\n'
         '\n'
         '    async for row in text_unit_table:\n'
         '        text_unit_id = row["id"]\n'
         '        text = row["text"]\n'
         '\n'
-        '        attrs = {"text": text, "analyzer": "person_ner_v1"}\n'
+        '        # v0.3.0: updated cache key to invalidate v0.2.0 results\n'
+        '        attrs = {"text": text, "analyzer": "person_ner_v2"}\n'
         '        key = gen_sha512_hash(attrs, attrs.keys())\n'
         '        result = await person_cache.get(key)\n'
         '\n'
@@ -233,24 +311,39 @@ def generate_complete_file(max_k: int, min_cooccurrence: int) -> str:
         '            for ent in doc.ents:\n'
         '                if ent.label_ == "PERSON":\n'
         '                    name = ent.text.strip()\n'
-        '                    if len(name) >= 2 and not name.isdigit():\n'
+        '                    if _is_valid_person(name):\n'
         '                        result.append(name.upper())\n'
+        '                    else:\n'
+        '                        filtered_count += 1\n'
         '            await person_cache.set(key, result)\n'
         '\n'
         '        for name in result:\n'
         '            title_to_ids[name].append(text_unit_id)\n'
-        '            person_names.add(name)\n'
         '\n'
         '        completed += 1\n'
         '\n'
-        '    if person_names:\n'
+        '    # Apply min frequency threshold (v0.3.0)\n'
+        '    all_persons = set(title_to_ids.keys())\n'
+        '    kept_persons = {\n'
+        '        name for name, ids in title_to_ids.items()\n'
+        '        if len(ids) >= min_person_freq\n'
+        '    }\n'
+        '    low_freq = all_persons - kept_persons\n'
+        '    for name in low_freq:\n'
+        '        del title_to_ids[name]\n'
+        '\n'
+        '    if all_persons:\n'
         '        logger.info(\n'
-        '            "PERSON NER: %d unique persons from %d text units",\n'
-        '            len(person_names),\n'
-        '            total,\n'
+        '            "PERSON NER: %d detected, %d filtered (invalid), "\n'
+        '            "%d filtered (freq<%d), %d kept as priority entities",\n'
+        '            len(all_persons) + filtered_count,\n'
+        '            filtered_count,\n'
+        '            len(low_freq),\n'
+        '            min_person_freq,\n'
+        '            len(kept_persons),\n'
         '        )\n'
         '\n'
-        '    return dict(title_to_ids), person_names\n'
+        '    return dict(title_to_ids), kept_persons\n'
         '\n'
         '\n'
         'def _extract_edges(\n'
@@ -349,12 +442,13 @@ def generate_complete_file(max_k: int, min_cooccurrence: int) -> str:
 
 
 def apply_patch(filepath: str, max_k: int, min_cooccurrence: int,
-                dry_run: bool = False) -> bool:
+                min_person_freq: int, dry_run: bool = False) -> bool:
     """Replace build_noun_graph.py with the integrated patched version."""
     if dry_run:
         print(f"Would replace: {filepath}")
         print(f"  Top-K = {max_k}, Min co-occurrence = {min_cooccurrence}")
-        print("  + PERSON NER extraction via en_core_web_sm")
+        print(f"  Min person frequency = {min_person_freq}")
+        print("  + PERSON NER extraction via en_core_web_sm (v0.3.0 filters)")
         print("  + Priority entities bypass Top-K filtering")
         return True
 
@@ -363,14 +457,14 @@ def apply_patch(filepath: str, max_k: int, min_cooccurrence: int,
         shutil.copy2(filepath, backup)
         logger.info("Backup created: %s", backup)
 
-    new_content = generate_complete_file(max_k, min_cooccurrence)
+    new_content = generate_complete_file(max_k, min_cooccurrence, min_person_freq)
 
     with open(filepath, "w") as f:
         f.write(new_content)
 
     logger.info(
-        "Patched: %s (K=%d, min_cooccurrence=%d, PERSON NER enabled)",
-        filepath, max_k, min_cooccurrence,
+        "Patched: %s (K=%d, min_cooccurrence=%d, min_person_freq=%d, PERSON NER v0.3.0)",
+        filepath, max_k, min_cooccurrence, min_person_freq,
     )
     return True
 
@@ -399,6 +493,10 @@ def main():
         help=f"Min co-occurrence to keep edge (default: {DEFAULT_MIN_COOCCURRENCE})"
     )
     parser.add_argument(
+        "--min-person-freq", type=int, default=DEFAULT_MIN_PERSON_FREQ,
+        help=f"Min frequency for person entities (default: {DEFAULT_MIN_PERSON_FREQ})"
+    )
+    parser.add_argument(
         "--dry-run", action="store_true",
         help="Show what would be done without modifying files"
     )
@@ -424,13 +522,17 @@ def main():
         if args.dry_run:
             print(f"Already patched: {target}")
             return
-        logger.info("Re-applying patch with PERSON NER...")
+        logger.info("Re-applying patch with PERSON NER v0.3.0...")
 
-    ok = apply_patch(target, args.max_k, args.min_cooccurrence, args.dry_run)
+    ok = apply_patch(
+        target, args.max_k, args.min_cooccurrence,
+        args.min_person_freq, args.dry_run,
+    )
     if ok and not args.dry_run:
         print(f"✅ Patched: {target}")
         print(f"   Top-K = {args.max_k}, Min co-occurrence = {args.min_cooccurrence}")
-        print("   PERSON NER = enabled (en_core_web_sm)")
+        print(f"   Min person freq = {args.min_person_freq}")
+        print("   PERSON NER = enabled (en_core_web_sm, v0.3.0 filters)")
     sys.exit(0 if ok else 1)
 
 

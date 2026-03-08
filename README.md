@@ -10,6 +10,7 @@
 - **NLPエッジ最適化パッチ**: GraphRAG v3.0.6 の `build_noun_graph.py` に対する Top-K + 共起フィルタパッチ（リレーション爆発問題の修正）
 - **ストップワードレンマタイズ**: 形態変化に対応した停止語フィルタ（`investigation` → `investigated`, `investigating` 等も自動除外）
 - **PERSON NER 強化**: `en_core_web_sm` による研究者名の補助的抽出。人名エンティティは Top-K フィルタをバイパス
+- **PERSON NER 精度改善 (v0.3.0)**: ジャーナル略語・セクションヘッダ・結合エンティティの誤検出除去。低頻度人名フィルタ（`min_person_freq=3`）
 - **対話式セットアップ**: LLM/Embedding/NLPモードを選択するだけで設定完了
 - **複数プロバイダー対応**: OpenAI / Azure OpenAI / Ollama
 - **LazyGraphRAG対応**: `fast` メソッドによる高速インデックス構築（LLM不要のNLPベース）
@@ -123,13 +124,13 @@ GraphRAG v3.0.6 の Lazy（Fast）モードでは、`build_noun_graph.py` の `_
 
 1. **Top-K エンティティ制限** (`max_entities_per_chunk=17`): チャンクごとに出現頻度上位K個のエンティティのみペアリング → C(17,2)=136 ペア/チャンク
 2. **最小共起回数フィルタ** (`min_co_occurrence=2`): 1つのチャンクにしか共起しないエッジを除去（偶発的共起の排除）
-3. **学術ストップワード除外**: `settings.yaml` の `exclude_nouns` に48語の学術汎用語を追加
+3. **学術ストップワード除外**: `settings.yaml` の `exclude_nouns` に70+語の学術汎用語を追加（v0.3.0 で拡張）
 
 ### パッチの適用・復元
 
 ```bash
-# v0.2.0 統合パッチ: Top-K + PERSON NER（インストール時に自動実行）
-python3 src/patch_person_ner.py --max-k 17 --min-cooccurrence 2
+# v0.3.0 統合パッチ: Top-K + PERSON NER + 精度改善（インストール時に自動実行）
+python3 src/patch_person_ner.py --max-k 17 --min-cooccurrence 2 --min-person-freq 3
 
 # ストップワードレンマタイズパッチ（インストール時に自動実行）
 python3 src/patch_stopword_lemma.py
@@ -160,10 +161,12 @@ v0.2.0 のパッチは NLTK SnowballStemmer を使用してステムベースの
 | `result` | results, resulted, resulting |
 | `study` | studies, studied, studying |
 
-## PERSON NER 強化（v0.2.0）
+## PERSON NER 強化（v0.2.0 → v0.3.0）
 
 Lazy モードでは scispaCy が科学テキスト向けに訓練されているため、人名の抽出精度が低い問題がありました。
 v0.2.0 では `en_core_web_sm`（一般英語 NER モデル）による補助的な PERSON エンティティ抽出を追加しました。
+
+v0.3.0 では誤検出フィルタを大幅に強化:
 
 | 特徴 | 説明 |
 |------|------|
@@ -172,6 +175,10 @@ v0.2.0 では `en_core_web_sm`（一般英語 NER モデル）による補助的
 | Top-K バイパス | 人名エンティティは頻度に関係なくペアリング対象 |
 | キャッシュ | `extract_person_entities` として個別にキャッシュ |
 | フォールバック | `en_core_web_sm` 未インストール時は自動スキップ |
+| 学術キーワードフィルタ | ジャーナル略語（J. APPL, J. MATER 等）を自動除外 |
+| セクションヘッダ除外 | ローマ数字パターン（I. INTRODUCTION 等）を除外 |
+| 結合エンティティ除外 | ET AL、>3単語、末尾句読点を除外 |
+| 最小頻度閾値 | `min_person_freq=3`（デフォルト）で低頻度人名をスキップ |
 
 ### Top-K パラメータの選択ガイド
 
@@ -232,8 +239,8 @@ project/
 │   ├── graphrag_mcp_server.py # MCP Server（Anthropic MCP対応）
 │   ├── build_domain_dictionary.py # ドメイン辞書構築
 │   ├── patch_noun_graph.py    # NLPエッジ最適化パッチ v0.1.0（Top-K + 共起フィルタ）
-│   ├── patch_person_ner.py    # PERSON NER + Top-K 統合パッチ v0.2.0
-│   ├── patch_stopword_lemma.py # ストップワードレンマタイズパッチ v0.2.0
+│   ├── patch_person_ner.py    # PERSON NER + Top-K 統合パッチ v0.3.0
+│   ├── patch_stopword_lemma.py # ストップワードレンマタイズパッチ v0.2.0+
 │   └── generate_settings.py   # 設定ファイル生成（学術ストップワード含む）
 ├── build_dictionary.sh        # 辞書構築ショートカット
 ├── run_index.sh               # インデックス構築ショートカット

@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-03-08
+
+### Added
+- **PERSON NER 誤検出フィルタ強化** (`patch_person_ner.py`)
+  - 学術キーワードフィルタ拡張（40+ ジャーナル/分野用語）
+  - セクションヘッダ除外（ローマ数字 + INTRODUCTION 等）
+  - 結合エンティティ除外（ET AL、>3 単語、末尾句読点）
+  - 最小人名頻度閾値（`min_person_freq=3`）で低頻度名をスキップ
+  - `_is_valid_person()` 関数による構造的フィルタリング
+  - 改善ログ出力（検出数/除外数/保持数を表示）
+- **ストップワード拡張**（`generate_settings.py`）
+  - 新規追加: FIG, FIG., LOW, HIGHER, LOWER, CONTENT, FUNCTION, IMAGE,
+    DETECTED, IDENTIFIED, SUGGESTED, INDICATED, DESCRIBED, REPORTED,
+    DETERMINED, ESTIMATED, CALCULATED, EXAMINED, DISCUSSED, CONSIDERED, FOUND
+  - 合計 70+ のデフォルトストップワード（v0.2.0 は 48 語）
+
+### Changed
+- `patch_person_ner.py`: キャッシュキーを `person_ner_v2` に更新（v0.2.0 結果の無効化）
+- `patch_person_ner.py`: `--min-person-freq` CLI オプション追加
+
+### Performance
+- PERSON NER 誤検出率: ~30% → <5%（v0.2.0 比）
+- 低頻度人名エンティティ除外で不要なエッジ/コミュニティ生成を削減
+
 ## [0.2.0] - 2026-03-08
 
 ### Added
@@ -56,6 +80,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 初期リリース（K=15 デフォルト）
 - graphrag-hybrid-installer の基本構成 11 ファイル
 
+[0.3.0]: https://github.com/nahisaho/graphrag-hybrid-installer/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/nahisaho/graphrag-hybrid-installer/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/nahisaho/graphrag-hybrid-installer/compare/af232a0...v0.1.0
 [0.0.1]: https://github.com/nahisaho/graphrag-hybrid-installer/releases/tag/af232a0
