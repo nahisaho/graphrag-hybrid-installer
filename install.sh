@@ -326,15 +326,31 @@ cp "$INSTALLER_DIR/src/build_bilingual_thesaurus.py" "$TARGET_DIR/src/"
 cp "$INSTALLER_DIR/src/generate_settings.py"       "$TARGET_DIR/src/"
 cp "$INSTALLER_DIR/src/graphrag_mcp_server.py"     "$TARGET_DIR/src/"
 cp "$INSTALLER_DIR/src/patch_noun_graph.py"        "$TARGET_DIR/src/"
+cp "$INSTALLER_DIR/src/patch_stopword_lemma.py"    "$TARGET_DIR/src/"
+cp "$INSTALLER_DIR/src/patch_person_ner.py"        "$TARGET_DIR/src/"
 ok "Source files copied"
 
-# Apply NLP edge extraction optimization patch
-info "Applying NLP edge extraction optimization (Top-K=17, co-occurrence≥2)..."
-if python3 "$INSTALLER_DIR/src/patch_noun_graph.py" --max-k 17 --min-cooccurrence 2 2>&1; then
-  ok "NLP optimization patch applied"
+# Apply NLP edge extraction optimization patch (v0.2.0: use patch_person_ner.py which includes Top-K)
+info "Applying NLP optimization + PERSON NER patch (Top-K=17, co-occurrence≥2)..."
+if python3 "$INSTALLER_DIR/src/patch_person_ner.py" --max-k 17 --min-cooccurrence 2 2>&1; then
+  ok "NLP optimization + PERSON NER patch applied"
 else
-  warn "NLP optimization patch failed (non-critical). You can apply manually:"
-  warn "  python3 $TARGET_DIR/src/patch_noun_graph.py --max-k 17 --min-cooccurrence 2"
+  warn "PERSON NER patch failed, falling back to basic Top-K patch..."
+  if python3 "$INSTALLER_DIR/src/patch_noun_graph.py" --max-k 17 --min-cooccurrence 2 2>&1; then
+    ok "Basic NLP optimization patch applied (without PERSON NER)"
+  else
+    warn "NLP optimization patch failed (non-critical). You can apply manually:"
+    warn "  python3 $TARGET_DIR/src/patch_person_ner.py --max-k 17 --min-cooccurrence 2"
+  fi
+fi
+
+# Apply stopword lemmatization patch (v0.2.0)
+info "Applying stopword lemmatization patch..."
+if python3 "$INSTALLER_DIR/src/patch_stopword_lemma.py" 2>&1; then
+  ok "Stopword lemmatization patch applied"
+else
+  warn "Stopword lemmatization patch failed (non-critical). You can apply manually:"
+  warn "  python3 $TARGET_DIR/src/patch_stopword_lemma.py"
 fi
 
 # Initialize GraphRAG (prompts)

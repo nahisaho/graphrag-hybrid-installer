@@ -8,6 +8,8 @@
 
 - **ハイブリッドNLP抽出**: scispaCy（英語科学論文）+ GiNZA（日本語）+ ドメイン辞書（複合名詞補完）
 - **NLPエッジ最適化パッチ**: GraphRAG v3.0.6 の `build_noun_graph.py` に対する Top-K + 共起フィルタパッチ（リレーション爆発問題の修正）
+- **ストップワードレンマタイズ**: 形態変化に対応した停止語フィルタ（`investigation` → `investigated`, `investigating` 等も自動除外）
+- **PERSON NER 強化**: `en_core_web_sm` による研究者名の補助的抽出。人名エンティティは Top-K フィルタをバイパス
 - **対話式セットアップ**: LLM/Embedding/NLPモードを選択するだけで設定完了
 - **複数プロバイダー対応**: OpenAI / Azure OpenAI / Ollama
 - **LazyGraphRAG対応**: `fast` メソッドによる高速インデックス構築（LLM不要のNLPベース）
@@ -126,15 +128,50 @@ GraphRAG v3.0.6 の Lazy（Fast）モードでは、`build_noun_graph.py` の `_
 ### パッチの適用・復元
 
 ```bash
-# パッチを適用（インストール時に自動実行）
-python3 src/patch_noun_graph.py --max-k 17 --min-cooccurrence 2
+# v0.2.0 統合パッチ: Top-K + PERSON NER（インストール時に自動実行）
+python3 src/patch_person_ner.py --max-k 17 --min-cooccurrence 2
+
+# ストップワードレンマタイズパッチ（インストール時に自動実行）
+python3 src/patch_stopword_lemma.py
 
 # ドライラン（変更内容を確認のみ）
-python3 src/patch_noun_graph.py --dry-run
+python3 src/patch_person_ner.py --dry-run
+python3 src/patch_stopword_lemma.py --dry-run
 
 # パッチを復元（オリジナルに戻す）
-python3 src/patch_noun_graph.py --restore
+python3 src/patch_person_ner.py --restore
+python3 src/patch_stopword_lemma.py --restore
+
+# v0.1.0 互換: Top-K のみ（PERSON NER なし）
+python3 src/patch_noun_graph.py --max-k 17 --min-cooccurrence 2
 ```
+
+## ストップワードレンマタイズ（v0.2.0）
+
+GraphRAG の元のストップワードフィルタは完全一致比較のため、`investigation` を除外しても
+`investigated`, `investigating`, `investigations` は除外されません。
+
+v0.2.0 のパッチは NLTK SnowballStemmer を使用してステムベースのマッチングを行います:
+
+| exclude_nouns 登録語 | 自動除外される変化形 |
+|---------------------|-------------------|
+| `investigation` | investigated, investigating, investigations |
+| `figure` | figures, figured, figuring |
+| `result` | results, resulted, resulting |
+| `study` | studies, studied, studying |
+
+## PERSON NER 強化（v0.2.0）
+
+Lazy モードでは scispaCy が科学テキスト向けに訓練されているため、人名の抽出精度が低い問題がありました。
+v0.2.0 では `en_core_web_sm`（一般英語 NER モデル）による補助的な PERSON エンティティ抽出を追加しました。
+
+| 特徴 | 説明 |
+|------|------|
+| 抽出モデル | `en_core_web_sm` (spaCy 標準英語モデル) |
+| 対象ラベル | PERSON のみ |
+| Top-K バイパス | 人名エンティティは頻度に関係なくペアリング対象 |
+| キャッシュ | `extract_person_entities` として個別にキャッシュ |
+| フォールバック | `en_core_web_sm` 未インストール時は自動スキップ |
 
 ### Top-K パラメータの選択ガイド
 
@@ -194,7 +231,9 @@ project/
 │   ├── run_graphrag_hybrid.py # CLI ラッパー（Monkey-Patch）
 │   ├── graphrag_mcp_server.py # MCP Server（Anthropic MCP対応）
 │   ├── build_domain_dictionary.py # ドメイン辞書構築
-│   ├── patch_noun_graph.py    # NLPエッジ最適化パッチ（Top-K + 共起フィルタ）
+│   ├── patch_noun_graph.py    # NLPエッジ最適化パッチ v0.1.0（Top-K + 共起フィルタ）
+│   ├── patch_person_ner.py    # PERSON NER + Top-K 統合パッチ v0.2.0
+│   ├── patch_stopword_lemma.py # ストップワードレンマタイズパッチ v0.2.0
 │   └── generate_settings.py   # 設定ファイル生成（学術ストップワード含む）
 ├── build_dictionary.sh        # 辞書構築ショートカット
 ├── run_index.sh               # インデックス構築ショートカット
