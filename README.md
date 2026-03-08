@@ -1,5 +1,7 @@
 # GraphRAG Hybrid Installer
 
+[![GitHub](https://img.shields.io/badge/GitHub-nahisaho%2Fgraphrag--hybrid--insaller-blue?logo=github)](https://github.com/nahisaho/graphrag-hybrid-insaller)
+
 **scispaCy + GiNZA + ドメイン辞書** によるハイブリッドGraphRAG環境を対話式で一括セットアップするインストーラーです。
 
 ## 特徴
@@ -117,7 +119,7 @@ GraphRAG v3.0.6 の Lazy（Fast）モードでは、`build_noun_graph.py` の `_
 
 ### パッチの3つの戦略
 
-1. **Top-K エンティティ制限** (`max_entities_per_chunk=15`): チャンクごとに出現頻度上位K個のエンティティのみペアリング → C(15,2)=105 ペア/チャンク
+1. **Top-K エンティティ制限** (`max_entities_per_chunk=17`): チャンクごとに出現頻度上位K個のエンティティのみペアリング → C(17,2)=136 ペア/チャンク
 2. **最小共起回数フィルタ** (`min_co_occurrence=2`): 1つのチャンクにしか共起しないエッジを除去（偶発的共起の排除）
 3. **学術ストップワード除外**: `settings.yaml` の `exclude_nouns` に48語の学術汎用語を追加
 
@@ -125,7 +127,7 @@ GraphRAG v3.0.6 の Lazy（Fast）モードでは、`build_noun_graph.py` の `_
 
 ```bash
 # パッチを適用（インストール時に自動実行）
-python3 src/patch_noun_graph.py --max-k 15 --min-cooccurrence 2
+python3 src/patch_noun_graph.py --max-k 17 --min-cooccurrence 2
 
 # ドライラン（変更内容を確認のみ）
 python3 src/patch_noun_graph.py --dry-run
@@ -139,11 +141,13 @@ python3 src/patch_noun_graph.py --restore
 | K値 | リレーション数 | コスト | 品質 | 推奨用途 |
 |-----|--------------|--------|------|---------|
 | 10 | 1,060 | $0.072 | ★☆☆ | コスト最優先 |
-| **15** | **2,660** | **$0.097** | **★★★** | **推奨（Pareto最適）** |
+| 15 | 2,660 | $0.097 | ★★★ | 品質・コスト良好 |
+| **17** | **3,400** | **$0.120** | **★★★** | **推奨（研究者名も抽出可能）** |
 | 20 | 5,108 | $0.149 | ★★★ | 品質重視 |
 | 30 | 12,172 | $0.270 | ★★★ | 高密度グラフ |
 
-> K=15 が品質・コストの Pareto 最適解です。Standard モードよりも高い検索品質を、1/6 のコストで実現します。
+> K=17 が品質・コストの最適解です。K=15 に比べ研究者名の特定能力が大幅に向上し、
+> Standard モードと90%同等の検索品質を、1/5 のコストで実現します。
 
 ## NLPモードの比較
 

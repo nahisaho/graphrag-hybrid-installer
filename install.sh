@@ -329,12 +329,12 @@ cp "$INSTALLER_DIR/src/patch_noun_graph.py"        "$TARGET_DIR/src/"
 ok "Source files copied"
 
 # Apply NLP edge extraction optimization patch
-info "Applying NLP edge extraction optimization (Top-K=15, co-occurrence≥2)..."
-if python3 "$INSTALLER_DIR/src/patch_noun_graph.py" --max-k 15 --min-cooccurrence 2 2>&1; then
+info "Applying NLP edge extraction optimization (Top-K=17, co-occurrence≥2)..."
+if python3 "$INSTALLER_DIR/src/patch_noun_graph.py" --max-k 17 --min-cooccurrence 2 2>&1; then
   ok "NLP optimization patch applied"
 else
   warn "NLP optimization patch failed (non-critical). You can apply manually:"
-  warn "  python3 $TARGET_DIR/src/patch_noun_graph.py --max-k 15 --min-cooccurrence 2"
+  warn "  python3 $TARGET_DIR/src/patch_noun_graph.py --max-k 17 --min-cooccurrence 2"
 fi
 
 # Initialize GraphRAG (prompts)

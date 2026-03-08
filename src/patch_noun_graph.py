@@ -11,7 +11,7 @@ Problem:
   Standard mode → higher community_reports LLM costs.
 
 Solution (3 strategies):
-  1. Top-K entity limit (K=15): Only pair the K most frequent entities
+  1. Top-K entity limit (K=17): Only pair the K most frequent entities
      per chunk, reducing O(N²) → O(K²).
   2. Min co-occurrence filter (≥2): Keep only edges that appear in ≥2
      text chunks, removing coincidental co-occurrences.
@@ -24,7 +24,7 @@ Results (20 papers, gpt-4o-mini):
   - Quality: Maintained or improved vs Standard
 
 Usage:
-  python3 patch_noun_graph.py [--max-k 15] [--min-cooccurrence 2] [--dry-run]
+  python3 patch_noun_graph.py [--max-k 17] [--min-cooccurrence 2] [--dry-run]
 
 Reference:
   https://github.com/microsoft/graphrag
@@ -41,7 +41,7 @@ import textwrap
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MAX_K = 15
+DEFAULT_MAX_K = 17
 DEFAULT_MIN_COOCCURRENCE = 2
 
 
