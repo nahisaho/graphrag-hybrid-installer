@@ -50,8 +50,8 @@ done
 # =============================================================================
 echo ""
 echo -e "${BOLD}${CYAN}╔══════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${BOLD}${CYAN}║        GraphRAG Hybrid Installer v1.0                       ║${NC}"
-echo -e "${BOLD}${CYAN}║   scispaCy + GiNZA + Domain Dictionary for GraphRAG         ║${NC}"
+echo -e "${BOLD}${CYAN}║        GraphRAG Hybrid Installer v0.4.0                    ║${NC}"
+echo -e "${BOLD}${CYAN}║   scispaCy + GiNZA + Domain Dictionary + 2-Layer Search    ║${NC}"
 echo -e "${BOLD}${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
@@ -319,16 +319,18 @@ header "8/9 Project Setup"
 # Copy source files
 info "Copying source files..."
 mkdir -p "$TARGET_DIR/src"
-cp "$INSTALLER_DIR/src/hybrid_extractor.py"       "$TARGET_DIR/src/"
-cp "$INSTALLER_DIR/src/run_graphrag_hybrid.py"     "$TARGET_DIR/src/"
-cp "$INSTALLER_DIR/src/build_domain_dictionary.py" "$TARGET_DIR/src/"
-cp "$INSTALLER_DIR/src/build_bilingual_thesaurus.py" "$TARGET_DIR/src/"
-cp "$INSTALLER_DIR/src/generate_settings.py"       "$TARGET_DIR/src/"
-cp "$INSTALLER_DIR/src/graphrag_mcp_server.py"     "$TARGET_DIR/src/"
-cp "$INSTALLER_DIR/src/patch_noun_graph.py"        "$TARGET_DIR/src/"
-cp "$INSTALLER_DIR/src/patch_stopword_lemma.py"    "$TARGET_DIR/src/"
-cp "$INSTALLER_DIR/src/patch_person_ner.py"        "$TARGET_DIR/src/"
-ok "Source files copied"
+cp "$INSTALLER_DIR/src/hybrid_extractor.py"           "$TARGET_DIR/src/"
+cp "$INSTALLER_DIR/src/run_graphrag_hybrid.py"         "$TARGET_DIR/src/"
+cp "$INSTALLER_DIR/src/build_domain_dictionary.py"     "$TARGET_DIR/src/"
+cp "$INSTALLER_DIR/src/build_bilingual_thesaurus.py"   "$TARGET_DIR/src/"
+cp "$INSTALLER_DIR/src/generate_settings.py"           "$TARGET_DIR/src/"
+cp "$INSTALLER_DIR/src/graphrag_mcp_server.py"         "$TARGET_DIR/src/"
+cp "$INSTALLER_DIR/src/patch_noun_graph.py"            "$TARGET_DIR/src/"
+cp "$INSTALLER_DIR/src/patch_stopword_lemma.py"        "$TARGET_DIR/src/"
+cp "$INSTALLER_DIR/src/patch_person_ner.py"            "$TARGET_DIR/src/"
+cp "$INSTALLER_DIR/src/build_embedding_index.py"       "$TARGET_DIR/src/"
+cp "$INSTALLER_DIR/src/two_layer_search.py"            "$TARGET_DIR/src/"
+ok "Source files copied (including 2-layer pipeline v0.4.0)"
 
 # Apply NLP edge extraction optimization patch (v0.2.0: use patch_person_ner.py which includes Top-K)
 info "Applying NLP optimization + PERSON NER patch (Top-K=17, co-occurrence≥2)..."
@@ -484,6 +486,47 @@ python3 "$SCRIPT_DIR/src/run_graphrag_hybrid.py" query \
 QEOF
 chmod +x "$TARGET_DIR/run_query.sh"
 
+# v0.4.0: 2-layer search pipeline script
+cat > "$TARGET_DIR/run_two_layer.sh" << 'TWOEOF'
+#!/usr/bin/env bash
+# 2-layer architecture search: Embedding (Layer 1) + GraphRAG (Layer 2)
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+# Load .env
+set -a
+source "$SCRIPT_DIR/.env" 2>/dev/null || true
+set +a
+export GRAPHRAG_ROOT="$SCRIPT_DIR"
+
+# Detect provider from first arg if --provider given
+PROVIDER_ARG=""
+if [[ "${1:-}" == "--provider" ]]; then
+  PROVIDER_ARG="--provider $2"
+  shift 2
+fi
+
+COMMAND="${1:-}"
+if [[ -z "$COMMAND" ]]; then
+  echo "Usage: ./run_two_layer.sh [--provider ollama|openai] <command> [options]"
+  echo ""
+  echo "Commands:"
+  echo "  build-index [--limit N]                 Build Layer 1 embedding index"
+  echo "  search \"query\" [--top-k N]              Layer 1 fast search only"
+  echo "  query \"query\" [--top-k N] [--search-type local|global|drift]"
+  echo "                                          Full 2-layer search"
+  echo "  cache-list                              Show cache entries"
+  echo "  cache-clear                             Clear all caches"
+  exit 1
+fi
+
+# shellcheck disable=SC2086
+python3 "$SCRIPT_DIR/src/two_layer_search.py" $PROVIDER_ARG "$@"
+TWOEOF
+chmod +x "$TARGET_DIR/run_two_layer.sh"
+ok "2-layer search script created"
+
 ok "Convenience scripts created"
 
 # =============================================================================
@@ -575,7 +618,10 @@ echo "  4. Build index:"
 echo "     cd $TARGET_DIR && ./run_index.sh fast"
 echo "  5. Query:"
 echo "     cd $TARGET_DIR && ./run_query.sh local \"your question\""
-echo "  6. Start MCP Server (after index build):"
+echo "  6. 2-layer search (large-scale, v0.4.0):"
+echo "     cd $TARGET_DIR && ./run_two_layer.sh build-index"
+echo "     cd $TARGET_DIR && ./run_two_layer.sh query \"your question\" --top-k 10"
+echo "  7. Start MCP Server (after index build):"
 echo "     cd $TARGET_DIR && ./run_mcp_server.sh stdio"
 echo ""
 echo -e "${BOLD}Files:${NC}"
@@ -585,11 +631,12 @@ echo "  mcp_config.json            — MCP client configuration (Claude/VS Code)
 echo "  src/hybrid_extractor.py    — Hybrid NLP extractor"
 echo "  src/run_graphrag_hybrid.py — CLI wrapper with monkey-patch"
 echo "  src/graphrag_mcp_server.py — MCP server for GraphRAG"
-echo "  src/build_domain_dictionary.py — Dictionary builder"
-echo "  src/build_bilingual_thesaurus.py — Bilingual thesaurus builder"
+echo "  src/build_embedding_index.py — Layer 1 embedding index builder"
+echo "  src/two_layer_search.py    — 2-layer search pipeline"
 echo "  build_dictionary.sh        — Dictionary build shortcut"
 echo "  build_thesaurus.sh         — Thesaurus build shortcut"
 echo "  run_index.sh               — Index build shortcut"
 echo "  run_query.sh               — Query shortcut"
+echo "  run_two_layer.sh           — 2-layer search shortcut"
 echo "  run_mcp_server.sh          — MCP server shortcut"
 echo ""

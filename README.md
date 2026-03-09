@@ -6,11 +6,11 @@
 
 ## 特徴
 
+- **2層アーキテクチャ検索 (v0.4.0)**: Layer 1 Embedding検索で論文サブセットを高速抽出 → Layer 2 オンデマンドGraphRAG構築・クエリ
 - **ハイブリッドNLP抽出**: scispaCy（英語科学論文）+ GiNZA（日本語）+ ドメイン辞書（複合名詞補完）
 - **NLPエッジ最適化パッチ**: GraphRAG v3.0.6 の `build_noun_graph.py` に対する Top-K + 共起フィルタパッチ（リレーション爆発問題の修正）
-- **ストップワードレンマタイズ**: 形態変化に対応した停止語フィルタ（`investigation` → `investigated`, `investigating` 等も自動除外）
-- **PERSON NER 強化**: `en_core_web_sm` による研究者名の補助的抽出。人名エンティティは Top-K フィルタをバイパス
-- **PERSON NER 精度改善 (v0.3.0)**: ジャーナル略語・セクションヘッダ・結合エンティティの誤検出除去。低頻度人名フィルタ（`min_person_freq=3`）
+- **ストップワードレンマタイズ**: 形態変化に対応した停止語フィルタ
+- **PERSON NER 強化**: `en_core_web_sm` による研究者名の補助的抽出。誤検出除去フィルタ付き (v0.3.0)
 - **対話式セットアップ**: LLM/Embedding/NLPモードを選択するだけで設定完了
 - **複数プロバイダー対応**: OpenAI / Azure OpenAI / Ollama
 - **LazyGraphRAG対応**: `fast` メソッドによる高速インデックス構築（LLM不要のNLPベース）
@@ -53,7 +53,12 @@ cp /path/to/your/files/*.md input/
 ./run_query.sh local "磁性材料の最新の研究動向は？"
 ./run_query.sh global "東北大学の主要な研究分野は？"
 
-# 5. MCP Server を起動（Claude Desktop / VS Code 連携）
+# 5. 2層アーキテクチャ検索（大規模論文リポジトリ向け）
+./run_two_layer.sh build-index                        # Layer 1 インデックス構築
+./run_two_layer.sh search "Ti合金の疲労特性"           # Layer 1 高速検索
+./run_two_layer.sh query "Ti合金の疲労特性" --top-k 10  # 2層検索
+
+# 6. MCP Server を起動（Claude Desktop / VS Code 連携）
 ./run_mcp_server.sh stdio      # stdio モード（推奨）
 ./run_mcp_server.sh http 8765  # HTTP モード（リモート接続）
 ```
@@ -103,6 +108,95 @@ cp mcp_config.json ~/.config/claude/claude_desktop_config.json
 | `graphrag_drift_search` | ハイブリッド検索 | 詳細+概要の統合検索 |
 | `graphrag_basic_search` | 基本テキスト検索 | クイック検索 |
 | `graphrag_index_status` | インデックス状態確認 | エンティティ数等の確認 |
+
+## 2層アーキテクチャ検索パイプライン (v0.4.0)
+
+10万本規模の論文リポジトリに対して GraphRAG のフルビルドは非現実的（推定コスト $300+、ビルド時間 50h+）なため、
+**クエリ駆動のオンデマンドアプローチ** を採用しています。
+
+```
+クエリ → Layer 1 (Embedding検索, <3秒) → top-K 論文抽出
+      → Layer 2 (GraphRAGオンデマンド構築, ~20分) → 回答
+```
+
+### 使用方法
+
+```bash
+# ── Layer 1 インデックス構築（初回のみ） ──
+./run_two_layer.sh build-index                          # Ollama bge-m3
+./run_two_layer.sh build-index --provider openai         # OpenAI
+./run_two_layer.sh build-index --provider openai --limit 1000  # 上限指定
+
+# ── Layer 1 のみの高速検索 ──
+./run_two_layer.sh search "Ti合金の疲労特性" --top-k 20
+
+# ── 2層検索（Layer 1 + Layer 2 GraphRAG） ──
+./run_two_layer.sh query "水素脆化のメカニズム"                  # デフォルト: local, top-k=100
+./run_two_layer.sh query "材料強度に影響する因子" --search-type global  # global検索
+./run_two_layer.sh query "Ti合金の特性" --top-k 10 --provider openai  # OpenAI + 10論文
+
+# ── キャッシュ管理 ──
+./run_two_layer.sh cache-list
+./run_two_layer.sh cache-clear
+```
+
+### 実測データ（2,385 論文→ 10本サブセット）
+
+| フェーズ | 所要時間 | 割合 |
+|---------|---------|------|
+| Layer 1 Embedding検索 | 2.1秒 | 0.2% |
+| Layer 2 NLP抽出 | 86.4秒 | 6.5% |
+| Layer 2 Community要約 (LLM) | 1,197.5秒 | 90.6% |
+| Layer 2 Embedding生成 | 34.0秒 | 2.6% |
+| GraphRAGクエリ実行 | ~5秒 | 0.4% |
+| **合計** | **~22分** | 100% |
+
+### キャッシュ機構
+
+- 同一または類似クエリ（cosine ≥ 0.85）の Layer 2 インデックスを自動再利用
+- TTL 24時間（期限切れエントリは自動削除）
+- キャッシュヒット時は Layer 2 構築をスキップし、即座にクエリ実行
+
+## Layer 1: 大規模 Embedding 検索インデックス
+
+10万本規模の論文リポジトリに対して、Ollama bge-m3 または OpenAI による高速 embedding 検索インデックスを構築します。
+クエリに関連する論文のサブセットを瞬時に抽出し、GraphRAG の動的サブインデックス構築（Layer 2）に渡す2層アーキテクチャの基盤です。
+
+`--provider` フラグで **Ollama / OpenAI を簡単に切り替え**可能:
+
+### 構築
+
+```bash
+# Ollama bge-m3 (デフォルト、無料)
+python3 src/build_embedding_index.py build --papers-dir input --limit 1000
+
+# OpenAI text-embedding-3-small
+python3 src/build_embedding_index.py --provider openai build --papers-dir input --limit 1000
+```
+
+### 検索テスト
+
+```bash
+python3 src/build_embedding_index.py search --query "Ti-Nb-Ta-Zr合金の疲労特性"
+python3 src/build_embedding_index.py --provider openai search --query "fatigue properties"
+```
+
+### 実測コスト（1,000論文）
+
+| 項目 | Ollama bge-m3 | OpenAI text-embedding-3-small |
+|------|---------------|-------------------------------|
+| 所要時間 | 36.1分 (0.5 papers/s) | **2.4分** (6.9 papers/s) |
+| コスト | **$0** | $0.15 |
+| チャンク数 | 5,571 | 5,571 |
+| トークン数 | — | 7,382,995 |
+
+### 10万本への外挿
+
+| 項目 | Ollama bge-m3 | OpenAI text-embedding-3-small |
+|------|---------------|-------------------------------|
+| 推定時間 | ~60時間 | **~4時間** |
+| コスト | **$0** | ~$14.77 |
+| ストレージ | ~2-5 GB | ~2-5 GB |
 
 ## NLPエッジ最適化パッチ
 
@@ -233,18 +327,27 @@ project/
 ├── cache/                     # LLMキャッシュ
 ├── logs/                      # 実行ログ
 ├── prompts/                   # GraphRAGプロンプト
+├── graphrag_workspaces/       # 2層Layer 2の動的ワークスペース
+├── graphrag_cache/            # 2層クエリキャッシュ
+├── lancedb_index/             # Layer 1 Embeddingインデックス（Ollama）
+├── lancedb_openai/            # Layer 1 Embeddingインデックス（OpenAI）
 ├── src/
 │   ├── hybrid_extractor.py    # ハイブリッドNounPhraseExtractor
 │   ├── run_graphrag_hybrid.py # CLI ラッパー（Monkey-Patch）
 │   ├── graphrag_mcp_server.py # MCP Server（Anthropic MCP対応）
 │   ├── build_domain_dictionary.py # ドメイン辞書構築
-│   ├── patch_noun_graph.py    # NLPエッジ最適化パッチ v0.1.0（Top-K + 共起フィルタ）
+│   ├── build_embedding_index.py # Layer 1 Embeddingインデックス構築 (v0.4.0)
+│   ├── two_layer_search.py    # 2層アーキテクチャ検索パイプライン (v0.4.0)
+│   ├── patch_noun_graph.py    # NLPエッジ最適化パッチ v0.1.0
 │   ├── patch_person_ner.py    # PERSON NER + Top-K 統合パッチ v0.3.0
 │   ├── patch_stopword_lemma.py # ストップワードレンマタイズパッチ v0.2.0+
-│   └── generate_settings.py   # 設定ファイル生成（学術ストップワード含む）
+│   ├── generate_settings.py   # 設定ファイル生成
+│   └── build_bilingual_thesaurus.py # バイリンガルシソーラス構築
 ├── build_dictionary.sh        # 辞書構築ショートカット
+├── build_thesaurus.sh         # シソーラス構築ショートカット
 ├── run_index.sh               # インデックス構築ショートカット
 ├── run_query.sh               # クエリ実行ショートカット
+├── run_two_layer.sh           # 2層検索ショートカット (v0.4.0)
 └── run_mcp_server.sh          # MCP Server起動ショートカット
 ```
 

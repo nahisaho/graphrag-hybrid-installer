@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-03-09
+
+### Added
+- **2層アーキテクチャ検索パイプライン** (`two_layer_search.py`)
+  - Layer 1: Embedding 検索で関連論文サブセットを高速抽出（< 3秒）
+  - Layer 2: サブセットに対して FastGraphRAG インデックスをオンデマンド構築 → クエリ
+  - 5 サブコマンド: `build-index`, `search`, `query`, `cache-list`, `cache-clear`
+  - IndexCache: cosine 類似度 ≥ 0.85 のクエリで既存インデックスを再利用（TTL 24h）
+  - ドメイン辞書の自動検出・ワークスペースへの自動コピー
+- **Layer 1 Embedding インデックスビルダー** (`build_embedding_index.py`)
+  - Ollama bge-m3 / OpenAI text-embedding-3-small の切り替え対応
+  - チャンク分割（800 tokens, overlap 80）→ LanceDB ベクトルインデックス
+  - 2,385 論文で実測: Ollama 36.1分/$0, OpenAI 2.4分/$0.15
+- `install.sh`: 2層パイプライン用のスクリプト生成（`run_two_layer.sh`）
+- `install.sh`: `build_embedding_index.py`, `two_layer_search.py` の自動コピー
+
+### Changed
+- `requirements.txt`: `numpy` を追加（cosine 類似度計算用）
+- `README.md`: 2層アーキテクチャの使用方法・設計思想・実測データを追記
+
+### Performance
+- 2層パイプライン E2E テスト（10論文サブセット）:
+  - Layer 1: 2.1秒（2,385 論文から 10 本を抽出）
+  - Layer 2: 22.0分（NLP 1.4分 + Community Reports 20.0分 + Embedding 0.6分）
+  - クエリ品質: Ti-Ni 合金の非金属介在物と疲労特性の関係を正確に抽出
+
 ## [0.3.0] - 2026-03-08
 
 ### Added
@@ -80,6 +106,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 初期リリース（K=15 デフォルト）
 - graphrag-hybrid-installer の基本構成 11 ファイル
 
+[0.4.0]: https://github.com/nahisaho/graphrag-hybrid-installer/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/nahisaho/graphrag-hybrid-installer/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/nahisaho/graphrag-hybrid-installer/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/nahisaho/graphrag-hybrid-installer/compare/af232a0...v0.1.0

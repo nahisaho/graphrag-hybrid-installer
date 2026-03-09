@@ -5,3 +5,9 @@ scispacy
 spacy>=3.7
 tiktoken
 mcp[cli]
+lancedb>=0.20.0
+pyarrow
+requests
+openai>=1.0.0
+numpy
+pyyaml
