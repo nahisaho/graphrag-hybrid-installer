@@ -91,6 +91,30 @@ except ImportError as e:
     logger.warning("HybridNounPhraseExtractor not available: %s", e)
 
 # ---------------------------------------------------------------------------
+# 2-Layer Search imports
+# ---------------------------------------------------------------------------
+try:
+    from two_layer_search import (
+        IndexCache,
+        create_provider,
+        search_relevant_papers,
+        run_two_layer_search,
+        PROVIDERS,
+        DEFAULT_CACHE_DIR,
+        DEFAULT_LANCEDB_DIR,
+        DEFAULT_PAPERS_DIR,
+        DEFAULT_PROMPTS_DIR,
+        DEFAULT_ENV_FILE,
+        DEFAULT_WORKSPACE_BASE,
+        PROJECT_ROOT,
+    )
+    TWO_LAYER_AVAILABLE = True
+    logger.info("2-layer search module loaded")
+except ImportError as e:
+    TWO_LAYER_AVAILABLE = False
+    logger.warning("2-layer search not available: %s", e)
+
+# ---------------------------------------------------------------------------
 # GraphRAG imports
 # ---------------------------------------------------------------------------
 from graphrag.cli.query import (
@@ -114,8 +138,16 @@ mcp = FastMCP(
         "Microsoft GraphRAG のナレッジグラフに対して検索を実行します。"
         "local_search はエンティティ特化、global_search はテーマ横断、"
         "drift_search はハイブリッド、basic_search はテキストユニットのみです。"
+        "two_layer_query は大規模論文コレクション（数千〜数万本）から"
+        "クエリ駆動で関連論文を抽出し、オンデマンドで GraphRAG を構築して回答します。"
     ),
 )
+
+# マルチユーザー並行制御: 2層検索の同時ビルド数を制限
+_two_layer_semaphore = asyncio.Semaphore(
+    int(os.environ.get("GRAPHRAG_MAX_CONCURRENT_BUILDS", "3"))
+)
+_cache_lock = asyncio.Lock()
 
 
 def _get_root_dir() -> Path:
@@ -317,6 +349,202 @@ def graphrag_index_status() -> str:
     except Exception as e:
         logger.error("Index status check failed: %s", e)
         return json.dumps({"error": str(e), "root_dir": str(root_dir)})
+
+
+# ---------------------------------------------------------------------------
+# 2-Layer Search MCP Tools (マルチユーザー対応)
+# ---------------------------------------------------------------------------
+
+def _get_two_layer_provider_name() -> str:
+    """環境変数からデフォルトの embedding プロバイダーを取得"""
+    return os.environ.get("GRAPHRAG_EMBEDDING_PROVIDER", "openai")
+
+
+def _get_lancedb_dir(provider_name: str) -> Path:
+    """プロバイダーに応じた LanceDB ディレクトリを返す"""
+    env_dir = os.environ.get("GRAPHRAG_LANCEDB_DIR")
+    if env_dir:
+        return Path(env_dir)
+    return Path(PROVIDERS.get(provider_name, {}).get(
+        "lancedb_default", str(DEFAULT_LANCEDB_DIR)
+    )) if TWO_LAYER_AVAILABLE else DEFAULT_LANCEDB_DIR
+
+
+@mcp.tool()
+async def two_layer_query(
+    query: str,
+    top_k: int = 10,
+    search_type: str = "local",
+    provider: str = "",
+) -> str:
+    """大規模論文コレクションからクエリ駆動で関連論文を抽出し、
+    オンデマンドで GraphRAG インデックスを構築して回答します。
+    数千〜数万本の論文に対応する2層アーキテクチャ検索です。
+
+    Layer 1: Embedding 類似検索で上位 top_k 論文を高速抽出（< 3秒）
+    Layer 2: サブセットに GraphRAG インデックスを構築 → クエリ実行
+
+    Args:
+        query: 検索クエリ（日本語/英語）
+        top_k: Layer 1 で抽出する論文数 (default: 10, 推奨: 10-50)
+        search_type: GraphRAG 検索方法 "local"|"global"|"drift" (default: "local")
+        provider: Embedding プロバイダー "openai"|"ollama" (default: 環境変数)
+    """
+    if not TWO_LAYER_AVAILABLE:
+        return "Error: 2層検索モジュールが利用できません。two_layer_search.py を確認してください。"
+
+    provider_name = provider or _get_two_layer_provider_name()
+    lancedb_dir = _get_lancedb_dir(provider_name)
+    logger.info(
+        "2-layer query: %s (top_k=%d, search=%s, provider=%s)",
+        query, top_k, search_type, provider_name,
+    )
+
+    # セマフォで同時ビルド数を制限（マルチユーザー保護）
+    async with _two_layer_semaphore:
+        try:
+            # settings.yaml のデフォルト
+            settings_src = PROJECT_ROOT / "settings.yaml"
+            if not settings_src.exists():
+                settings_src = None
+
+            # ブロッキング処理を別スレッドで実行
+            loop = asyncio.get_event_loop()
+            answer = await loop.run_in_executor(
+                None,
+                lambda: run_two_layer_search(
+                    query=query,
+                    search_type=search_type,
+                    top_k=top_k,
+                    provider_name=provider_name,
+                    lancedb_dir=lancedb_dir,
+                    papers_dir=DEFAULT_PAPERS_DIR,
+                    prompts_dir=DEFAULT_PROMPTS_DIR,
+                    env_file=DEFAULT_ENV_FILE,
+                    settings_src=settings_src,
+                    workspace_base=DEFAULT_WORKSPACE_BASE,
+                    cache_dir=DEFAULT_CACHE_DIR,
+                    use_cache=True,
+                ),
+            )
+            return answer
+        except Exception as e:
+            logger.error("2-layer query failed: %s", e)
+            return f"Error: {e}"
+
+
+@mcp.tool()
+async def two_layer_quick_search(
+    query: str,
+    top_k: int = 20,
+    provider: str = "",
+) -> str:
+    """Layer 1 のみの高速 Embedding 検索。関連論文のリストを距離付きで返します。
+    GraphRAG 構築は行わないため、数秒以内で結果を取得できます。
+
+    Args:
+        query: 検索クエリ（日本語/英語）
+        top_k: 取得する論文数 (default: 20)
+        provider: Embedding プロバイダー "openai"|"ollama" (default: 環境変数)
+    """
+    if not TWO_LAYER_AVAILABLE:
+        return "Error: 2層検索モジュールが利用できません。"
+
+    provider_name = provider or _get_two_layer_provider_name()
+    lancedb_dir = _get_lancedb_dir(provider_name)
+    logger.info("Layer 1 quick search: %s (top_k=%d)", query, top_k)
+
+    try:
+        import lancedb as _lancedb
+
+        loop = asyncio.get_event_loop()
+
+        def _do_search():
+            emb_provider = create_provider(provider_name)
+            paper_ids, query_emb = search_relevant_papers(
+                query, emb_provider, lancedb_dir, top_k,
+            )
+            # 距離情報付きで取得
+            db = _lancedb.connect(str(lancedb_dir))
+            table = db.open_table("papers")
+            results = table.search(query_emb).limit(top_k * 5).to_pandas()
+            paper_scores = results.groupby("paper_id")["_distance"].min().sort_values()
+            top_papers = paper_scores.head(top_k)
+
+            lines = [f"Layer 1 検索結果: {len(top_papers)} 論文\n"]
+            for i, (pid, dist) in enumerate(top_papers.items(), 1):
+                lines.append(f"  {i:3d}. {pid}  (距離: {dist:.4f})")
+            return "\n".join(lines)
+
+        return await loop.run_in_executor(None, _do_search)
+    except Exception as e:
+        logger.error("Quick search failed: %s", e)
+        return f"Error: {e}"
+
+
+@mcp.tool()
+async def two_layer_cache_status() -> str:
+    """2層検索のキャッシュ状態・統計を確認します。
+    キャッシュエントリ数、TTL、類似度閾値、アクセス回数などを返します。
+    """
+    if not TWO_LAYER_AVAILABLE:
+        return "Error: 2層検索モジュールが利用できません。"
+
+    logger.info("Cache status check")
+    try:
+        async with _cache_lock:
+            loop = asyncio.get_event_loop()
+
+            def _do_status():
+                cache = IndexCache(DEFAULT_CACHE_DIR)
+                stats = cache.get_stats()
+                entries = cache.list_entries()
+
+                result = {
+                    "statistics": stats,
+                    "entries": [
+                        {
+                            "query": e["query"][:80],
+                            "paper_count": e["paper_count"],
+                            "access_count": e["access_count"],
+                            "remaining_hours": e["remaining_hours"],
+                        }
+                        for e in entries
+                    ],
+                }
+                return json.dumps(result, ensure_ascii=False, indent=2)
+
+            return await loop.run_in_executor(None, _do_status)
+    except Exception as e:
+        logger.error("Cache status failed: %s", e)
+        return f"Error: {e}"
+
+
+@mcp.tool()
+async def two_layer_cache_clear() -> str:
+    """2層検索のキャッシュを全て削除します。
+    ディスク上のワークスペースディレクトリも削除されます。
+    """
+    if not TWO_LAYER_AVAILABLE:
+        return "Error: 2層検索モジュールが利用できません。"
+
+    logger.info("Cache clear requested")
+    try:
+        async with _cache_lock:
+            loop = asyncio.get_event_loop()
+
+            def _do_clear():
+                cache = IndexCache(DEFAULT_CACHE_DIR)
+                entries = cache.list_entries()
+                count = len(entries)
+                cache.clear_all()
+                return count
+
+            count = await loop.run_in_executor(None, _do_clear)
+            return f"キャッシュを削除しました（{count} エントリ）"
+    except Exception as e:
+        logger.error("Cache clear failed: %s", e)
+        return f"Error: {e}"
 
 
 # ---------------------------------------------------------------------------

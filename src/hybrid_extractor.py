@@ -27,6 +27,56 @@ from graphrag.index.operations.build_noun_graph.np_extractors.base import (
 
 logger = logging.getLogger(__name__)
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  エンティティ・ストップワード（v0.5.0）
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# PDF→Markdown変換のアーティファクトおよびメタデータ由来のノイズを除去する。
+# _post_filter_entities() で最終フィルタリングに使用。
+ENTITY_STOPWORDS: set[str] = {
+    # ドキュメントメタデータ / Markdownアーティファクト
+    "CONTENT", "DOCUMENT", "FORMAT", "MARKDOWN FORMAT", "TEXT",
+    "ORIGINAL", "EXTRACTED TEXT", "ADDITIONAL INFORMATION",
+    "IMAGE",
+    # 図表・構造要素
+    "FIGURE", "FIGURES", "FIGURE FIGURE", "FIG", "FIG.",
+    "TABLE", "TABLES", "NUMBER", "SECTION",
+    # セクションヘッダー
+    "REFERENCES", "INTRODUCTION", "EXPERIMENTAL", "DISCUSSION",
+    "CONCLUSION", "CONCLUSIONS", "SUMMARY", "ABSTRACT",
+    "ACKNOWLEDGMENTS", "ACKNOWLEDGEMENTS",
+    # 参考文献・学術誌略称（単語）
+    "CROSSREF", "VOL", "VOLUME", "ISSN", "DOI",
+    "REV", "LETT", "PHYS", "MATER", "SOC", "SCI", "APPL", "CHEM",
+    "JPN", "RES", "NUCL", "TRANS", "PROC", "MAGN", "ENG", "TECH",
+    "INT", "SUPPL", "MECH", "THERM", "VAC", "MED", "DENT",
+    "ACTA", "PHILOS", "METALL", "ELECTROCHEM", "SURF", "CRYST",
+    "BIOL", "OXID", "COHESION", "NON-CRYST",
+    # 参考文献・学術誌略称（複合）
+    "REV. LETT", "REV. B", "J. PHYS", "J. APPL", "J. CHEM",
+    "J. MATER", "IEEE TRANS", "PHYS. REV", "J. SOC",
+    "PHYS. REV. LETT", "PHYS. REV. B",
+    # ページ・番号マーカー
+    "P.", "PP", "NO.", "EQ.", "J.",
+    # 出版社所在地
+    "NEW YORK", "LONDON", "TOKYO",
+    # 汎用英単語（POS除外を補完）
+    "AND", "OF", "THE", "HERE", "WITH", "AT", "FOR", "FROM",
+    "SUCH", "ALSO", "HOWEVER", "THEREFORE", "THUS",
+    "RESULTS", "INVESTIGATED", "STUDY", "AUTHORS", "WORK",
+    "CASE", "EFFECT", "DATA", "MEASURED", "METHODS",
+    "SCIENCE", "NATURE", "JAPANESE",
+    # 日本語汎用語
+    "こと", "もの", "ため", "それ", "これ",
+}
+
+# 数値のみ / スペース区切り1文字パターンを検出する正規表現
+_RE_NUMERIC_ONLY = re.compile(r"^[\d.\s%°,]+$")
+_RE_SPACE_SINGLE_CHARS = re.compile(r"^([A-Z] )+[A-Z]$")  # "T O", "S N" etc.
+# 学術誌パターン: "J. Xxx", "Rev. Xxx", "Phys. Rev." 等
+_RE_JOURNAL_PATTERN = re.compile(
+    r"^(J\.|REV\.|PHYS\.|PROC\.|TRANS\.|ANN\.|BULL\.)\s", re.IGNORECASE
+)
+
 
 def _has_japanese(text: str) -> bool:
     """テキストに日本語文字が含まれるか判定"""
@@ -231,6 +281,9 @@ class HybridNounPhraseExtractor(BaseNounPhraseExtractor):
         if self.synonym_to_canonical:
             results = self._normalize_synonyms(results)
 
+        # ---- Step 4: エンティティ・ストップワードフィルタ ----
+        results = self._post_filter_entities(results)
+
         return results
 
     def _normalize_synonyms(self, terms: list[str]) -> list[str]:
@@ -280,6 +333,41 @@ class HybridNounPhraseExtractor(BaseNounPhraseExtractor):
 
         return normalized
 
+    def _post_filter_entities(self, terms: list[str]) -> list[str]:
+        """エンティティレベルのノイズ除去フィルタ（v0.6.0）"""
+        filtered = []
+        for term in terms:
+            upper = term.upper().strip()
+
+            # ストップワード完全一致
+            if upper in ENTITY_STOPWORDS:
+                continue
+
+            # 数値のみ（"10", "200", "1983", "0.08" 等）
+            if _RE_NUMERIC_ONLY.match(upper):
+                continue
+
+            # スペース区切り1文字パターン（"T O", "S N", "M S" 等 = PDF断片）
+            if _RE_SPACE_SINGLE_CHARS.match(upper):
+                continue
+
+            # 1文字以下（意味のない単一文字）
+            stripped = upper.replace(" ", "")
+            if len(stripped) <= 1:
+                continue
+
+            # "> FIGURE" のようなMarkdownアーティファクト
+            if upper.startswith(">"):
+                continue
+
+            # 学術誌パターン: "J. Phys", "Rev. Lett", "Proc. Natl" 等
+            if _RE_JOURNAL_PATTERN.match(upper):
+                continue
+
+            filtered.append(term)
+
+        return filtered
+
     def _extract_with_model(self, nlp, text: str) -> list[str]:
         """spaCyモデルで名詞句を抽出"""
         try:
@@ -321,7 +409,7 @@ class HybridNounPhraseExtractor(BaseNounPhraseExtractor):
         cleaned_tokens = [
             token for token in span
             if token.pos_ not in self.exclude_pos_tags
-            and token.text.upper() not in self.exclude_nouns
+            and not self.is_excluded_noun(token.text)
             and not token.is_space
             and not token.is_punct
         ]
